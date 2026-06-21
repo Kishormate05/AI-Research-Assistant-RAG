@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFLoader
-
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from utils.embeddings import get_embedding_model
@@ -51,52 +50,64 @@ def load_vector_db():
 default_db = load_vector_db()
 
 # -----------------------
-# UI
+# SESSION STATE
+# -----------------------
+
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+# -----------------------
+# TITLE
 # -----------------------
 
 st.title("📚 AI Research Assistant")
 
 st.markdown(
-    "Upload any PDF and ask questions using RAG + Gemini."
+    "Upload one or more PDFs and ask questions using RAG + Gemini."
 )
 
 # -----------------------
-# PDF UPLOAD
+# MULTI PDF UPLOAD
 # -----------------------
 
-uploaded_file = st.file_uploader(
-    "📤 Upload PDF",
-    type=["pdf"]
+uploaded_files = st.file_uploader(
+    "📤 Upload PDFs",
+    type=["pdf"],
+    accept_multiple_files=True
 )
 
 uploaded_db = None
+total_chunks = 0
 
-if uploaded_file:
+if uploaded_files:
 
-    st.success(
-        f"Uploaded: {uploaded_file.name}"
-    )
+    all_docs = []
 
-    with tempfile.NamedTemporaryFile(
-        delete=False,
-        suffix=".pdf"
-    ) as tmp_file:
+    with st.spinner("Processing PDFs..."):
 
-        tmp_file.write(
-            uploaded_file.getbuffer()
-        )
+        for uploaded_file in uploaded_files:
 
-        pdf_path = tmp_file.name
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=".pdf"
+            ) as tmp_file:
 
-    with st.spinner(
-        "Processing PDF..."
-    ):
+                tmp_file.write(
+                    uploaded_file.getbuffer()
+                )
 
-        loader = PyPDFLoader(
-            pdf_path
-        )
+                pdf_path = tmp_file.name
 
-        docs = loader.load()
+            loader = PyPDFLoader(
+                pdf_path
+            )
+
+            docs = loader.load()
+
+            for doc in docs:
+                doc.metadata["source"] = uploaded_file.name
+
+            all_docs.extend(docs)
 
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=500,
@@ -104,8 +115,10 @@ if uploaded_file:
         )
 
         chunks = splitter.split_documents(
-            docs
+            all_docs
         )
+
+        total_chunks = len(chunks)
 
         embeddings = get_embedding_model()
 
@@ -115,8 +128,46 @@ if uploaded_file:
         )
 
     st.success(
-        f"PDF processed successfully! Total Chunks: {len(chunks)}"
+        f"✅ Processed {len(uploaded_files)} PDF(s) | Total Chunks: {total_chunks}"
     )
+
+# -----------------------
+# SIDEBAR DASHBOARD
+# -----------------------
+
+with st.sidebar:
+
+    st.title("📊 Dashboard")
+
+    st.markdown("---")
+
+    st.metric(
+        "📚 PDFs Loaded",
+        len(uploaded_files) if uploaded_files else 0
+    )
+
+    st.metric(
+        "📄 Total Chunks",
+        total_chunks
+    )
+
+    st.markdown("---")
+
+    if uploaded_files:
+
+        st.subheader("Uploaded PDFs")
+
+        for pdf in uploaded_files:
+
+            st.write(f"📄 {pdf.name}")
+
+    st.markdown("---")
+
+    st.subheader("System")
+
+    st.write("🤖 Gemini 2.5 Flash")
+    st.write("🔍 FAISS Vector Search")
+    st.write("🧠 MiniLM-L6-v2 Embeddings")
 
 # -----------------------
 # QUESTION
@@ -140,14 +191,14 @@ if question:
 
             results = uploaded_db.similarity_search(
                 question,
-                k=3
+                k=5
             )
 
         else:
 
             results = default_db.similarity_search(
                 question,
-                k=3
+                k=5
             )
 
         context = "\n\n".join(
@@ -168,35 +219,62 @@ Question:
             prompt
         )
 
+        answer = response.text
+
+        st.session_state.chat_history.append(
+            {
+                "question": question,
+                "answer": answer
+            }
+        )
+
     # -----------------------
     # ANSWER
     # -----------------------
 
-    st.subheader(
-        "📌 Answer"
-    )
+    st.subheader("📌 Answer")
 
-    st.success(
-        response.text
-    )
+    st.success(answer)
 
     # -----------------------
     # SOURCES
     # -----------------------
 
-    st.subheader(
-        "📄 Retrieved Sources"
-    )
+    st.subheader("📄 Retrieved Sources")
 
-    for i, doc in enumerate(
-        results,
-        start=1
-    ):
+    for i, doc in enumerate(results, start=1):
+
+        source_name = doc.metadata.get(
+            "source",
+            "Unknown PDF"
+        )
 
         with st.expander(
-            f"Source {i}"
+            f"Source {i} - {source_name}"
         ):
 
             st.write(
                 doc.page_content[:1500]
             )
+
+# -----------------------
+# CHAT HISTORY
+# -----------------------
+
+if st.session_state.chat_history:
+
+    st.markdown("---")
+
+    st.subheader("💬 Chat History")
+
+    for idx, item in enumerate(
+        reversed(st.session_state.chat_history),
+        start=1
+    ):
+
+        with st.expander(
+            f"Q{idx}: {item['question']}"
+        ):
+
+            st.write("**Answer:**")
+            st.write(item["answer"])
